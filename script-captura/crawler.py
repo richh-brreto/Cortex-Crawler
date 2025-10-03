@@ -60,7 +60,7 @@ CAMINHO_LOG = os.path.join(CAMINHO_PASTA, NOME_LOG)
 NOME_CHUNK = f"chunks_processados_{MAC_ADRESS}.csv"
 CAMINHO_CHUNKS = os.path.join(CAMINHO_PASTA, NOME_CHUNK)
 
-# --- Funções de apoio  ---
+# --- Funções de coletar dados de máquina  ---
 def coletar_dados_hardware():
     return {
         'ip': ip,
@@ -72,6 +72,7 @@ def coletar_dados_hardware():
         'mac' : MAC_ADRESS
     }
 
+#função para coletar processos
 def coletar_dados_processos():
     processos_info = []
     for proc in psutil.process_iter():
@@ -113,6 +114,8 @@ def salvar_arquivo(dataFrame,CAMINHO):
 
 def registrar_log(mensagem):
     log_data = pd.DataFrame([{
+        'ip':ip,
+        'hostaname':nome_maquina,
         'timestamp': datetime.now(),
         'evento': mensagem,
         'mac' : MAC_ADRESS
