@@ -4,11 +4,11 @@ import time
 import os
 from datetime import datetime
 from uuid import getnode as get_mac
-
+import GPUtil as gputil
 import mysql.connector
 import socket
 import sys 
-
+import subprocess
 
 # Pega o nome e IP da máquina
 nome_maquina = socket.gethostname()
@@ -17,7 +17,7 @@ ip = socket.gethostbyname(nome_maquina)
 # Configuração pra conectar no banco
 try:
     conexao = mysql.connector.connect(
-        host="localhost",
+        host="localhost", # para apresentação colocar o IP do servidor
         user="root",
         password="sptech",
         database="cortex"
@@ -69,7 +69,8 @@ def coletar_dados_hardware():
         'cpu': psutil.cpu_percent(),
         'ram': psutil.virtual_memory().percent,
         'disco': psutil.disk_usage('/').percent,
-        'mac' : MAC_ADRESS
+        'mac' : MAC_ADRESS,
+        'gpu': gputil.getGPUs()[0].load*100 if gputil.getGPUs() else 0
     }
 
 #função para coletar processos
@@ -88,6 +89,7 @@ def coletar_dados_processos():
             cpu = round(proc.cpu_percent(interval=None)/ psutil.cpu_count(logical=True),1)
             disco = round((proc.io_counters().write_bytes / (1024 ** 2)),1)
             ram = round((proc.memory_info().rss * 100 / psutil.virtual_memory().total),1)
+            gpu = gputil.getGPUs()[0].load*100 if gputil.getGPUs() else 0
             if cpu > 0 or ram > 1 or disco > 1:
                 if ram < 1:
                     ram = 0
@@ -101,7 +103,9 @@ def coletar_dados_processos():
                     'cpu' : cpu,
                     'ram' : ram,
                     'dados_gravados' : disco,
-                    'mac' : MAC_ADRESS})
+                    'mac' : MAC_ADRESS,
+                    'gpu' : gpu
+                })
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
     return processos_info
@@ -115,7 +119,7 @@ def salvar_arquivo(dataFrame,CAMINHO):
 def registrar_log(mensagem):
     log_data = pd.DataFrame([{
         'ip':ip,
-        'hostaname':nome_maquina,
+        'hostname':nome_maquina,
         'timestamp': datetime.now(),
         'evento': mensagem,
         'mac' : MAC_ADRESS
@@ -136,6 +140,41 @@ def redefinir_caminho():
     NOME_ARQUIVO_PROCESSO = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}-Processos {MAC_ADRESS}.csv"
     CAMINHO_ARQUIVO_PROCESSO = os.path.join(CAMINHO_PASTA, NOME_ARQUIVO_PROCESSO)
     return CAMINHO_ARQUIVO,NOME_ARQUIVO, NOME_ARQUIVO_PROCESSO, CAMINHO_ARQUIVO_PROCESSO
+
+def check_blacklist(conexao):
+    nomes = []
+    try:
+        cur = conexao.cursor()
+        cur.execute("SELECT nome FROM blacklist")
+        rows = cur.fetchall()
+        nomes = [r[0] for r in rows if r and r[0]]
+        cur.close()
+    except Exception as e:
+        registrar_log(f"Erro ao carregar blacklist do banco: {e}")
+    return nomes
+
+def verificar_blacklist_processos(processos, nomes):
+    nomes_lower = [n.lower() for n in nomes]
+    for proc in psutil.process_iter(['name']):
+        try:
+            nome_proc = proc.info['name']
+            if nome_proc and nome_proc.lower() in nomes_lower:
+                # registra evento e chunk antes de matar
+                registrar_log(f"Processo da blacklist detectado: {nome_proc}")
+                adicionar_a_chunks(nome_proc)
+
+                # tenta matar (pode gerar AccessDenied se nao tiver admin)
+                try:
+                    proc.kill()
+                    registrar_log(f"Processo {nome_proc} foi encerrado automaticamente.")
+                except psutil.NoSuchProcess:
+                    registrar_log(f"Processo {nome_proc} já não existia ao tentar matar.")
+                except psutil.AccessDenied:
+                    registrar_log(f"Sem permissão para encerrar o processo {nome_proc}.")
+                except Exception as e:
+                    registrar_log(f"Erro ao encerrar processo {nome_proc}: {e}")
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
 
 # --- Lógica principal  ---
 def main():
@@ -158,6 +197,23 @@ def main():
 
             df_processo = pd.DataFrame(processos)
             df_processo.to_csv(CAMINHO_ARQUIVO_PROCESSO, index=False)
+
+            nomes = []
+            try:
+                conexao = mysql.connector.connect(
+                    host="localhost",
+                    user="root",
+                    password="sptech",
+                    database="cortex"
+                )
+                nomes = check_blacklist(conexao)
+                conexao.close()
+            except Exception as e:
+                registrar_log(f"Erro ao conectar/consultar blacklist: {e}")
+                nomes = []
+            # se houver nomes na blacklist, verificar e encerrar (após gravação)
+            if nomes:
+                verificar_blacklist_processos(processos, nomes)
             
             if time.time() - inicio_captura >= DURACAO_CAPTURA:
                 redefinir_caminho()
