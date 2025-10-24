@@ -24,7 +24,7 @@ try:
     cursor = conexao.cursor()
 
     #  verificando se a máquina com este IP e Hostname já existe
-    query_verifica = "SELECT id FROM modelo WHERE ip = %s AND nome = %s"
+    query_verifica = "SELECT id_modelo FROM modelo WHERE ip = %s AND hostname = %s"
     cursor.execute(query_verifica, (ip, nome_maquina))
     resultado = cursor.fetchone()
 
@@ -59,10 +59,13 @@ CAMINHO_LOG = os.path.join(CAMINHO_PASTA, NOME_LOG)
 NOME_CHUNK = f"chunks_processados_{MAC_ADRESS}.csv"
 CAMINHO_CHUNKS = os.path.join(CAMINHO_PASTA, NOME_CHUNK)
 
-ultima_io = psutil.disk_io_counters()
-ultimo_tempo = time.time()
+
 # --- Funções de coletar dados de máquina  ---
 def coletar_dados_hardware():
+    ultima_io = psutil.disk_io_counters()
+    ultimo_tempo = time.time()
+
+    time.sleep(3)
     # isso aqui é pra pegar o GPU
     gpu_usage = 0
     try:
