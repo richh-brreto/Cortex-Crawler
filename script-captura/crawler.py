@@ -17,14 +17,14 @@ ip = socket.gethostbyname(nome_maquina)
 try:
     conexao = mysql.connector.connect(
         host="localhost", # para apresentação colocar o IP do servidor
-        user="root",
+        user="aluno",
         password="sptech",
         database="cortex"
     )
     cursor = conexao.cursor()
 
     #  verificando se a máquina com este IP e Hostname já existe
-    query_verifica = "SELECT id FROM servidor WHERE ip = %s AND nome_maquina = %s"
+    query_verifica = "SELECT id FROM modelo WHERE ip = %s AND nome = %s"
     cursor.execute(query_verifica, (ip, nome_maquina))
     resultado = cursor.fetchone()
 
@@ -59,6 +59,8 @@ CAMINHO_LOG = os.path.join(CAMINHO_PASTA, NOME_LOG)
 NOME_CHUNK = f"chunks_processados_{MAC_ADRESS}.csv"
 CAMINHO_CHUNKS = os.path.join(CAMINHO_PASTA, NOME_CHUNK)
 
+ultima_io = psutil.disk_io_counters()
+ultimo_tempo = time.time()
 # --- Funções de coletar dados de máquina  ---
 def coletar_dados_hardware():
     # isso aqui é pra pegar o GPU
@@ -78,13 +80,34 @@ def coletar_dados_hardware():
         except:
             pass  # ignora falha no shutdown (se der erro acima)
 
+        atual_io = psutil.disk_io_counters()
+        atual_tempo = time.time()
+        tempo_decorrido = atual_tempo - ultimo_tempo
+
+    disco_uso_percent = 0
+    if tempo_decorrido > 0:
+        if hasattr(atual_io, 'busy_time') and hasattr(ultima_io, 'busy_time'): #busca se tem o atributo busy_time (tempo ocupado)
+            # usa o tempo que o disco esteve ocupado
+            busy_diff = atual_io.busy_time - ultima_io.busy_time
+            disco_uso_percent = round((busy_diff / (tempo_decorrido * 1000)) * 100, 1)
+        else:
+            # calcula baseado na soma de leitura e escrita
+            read_diff = atual_io.read_bytes - ultima_io.read_bytes # calcula quantos bytes foram lidos desde a última coleta
+            write_diff = atual_io.write_bytes - ultima_io.write_bytes # calcula quantos bytes foram escritos desde a última coleta
+            total_diff = read_diff + write_diff # total de bytes lidos e escritos
+            disco_uso_percent = round(min(100, total_diff / (1024 ** 2) / tempo_decorrido), 1) # converte para MB/s e calcula o percentual
+
+    ultima_io = atual_io
+    ultimo_tempo = atual_tempo
+
     return {
         'ip': ip,
         'hostname': nome_maquina,
         'timestamp': datetime.now().strftime('%Y-%m-%d_%H-%M-%S'),
         'cpu': psutil.cpu_percent(),
         'ram': psutil.virtual_memory().percent,
-        'disco': psutil.disk_usage('/').percent,
+        'armazenamento': psutil.disk_usage('/').percent,
+        'disco_uso': disco_uso_percent,
         'mac': MAC_ADRESS,
         'gpu': gpu_usage
     }
@@ -142,7 +165,8 @@ def coletar_dados_processos():
                     'ram' : ram,
                     'dados_gravados' : disco,
                     'mac' : MAC_ADRESS,
-                    'gpu' : gpu_percent
+                    'gpu' : gpu_percent,
+                    'disco_uso' : proc.io_counters().write_bytes # aqui vai pegar o quanto o processo em si ta usando de disco em bytes
                 })
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
@@ -183,7 +207,7 @@ def check_blacklist(conexao):
     nomes = []
     try:
         cur = conexao.cursor()
-        cur.execute("SELECT nome FROM blacklist")
+        cur.execute("SELECT nome FROM black_list")
         rows = cur.fetchall()
         nomes = [r[0] for r in rows if r and r[0]]
         cur.close()
@@ -240,7 +264,7 @@ def main():
             try:
                 conexao = mysql.connector.connect(
                     host="localhost",
-                    user="root",
+                    user="aluno",
                     password="sptech",
                     database="cortex"
                 )

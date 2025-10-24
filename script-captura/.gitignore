@@ -1,2 +1,3 @@
-./venv
-./dados_monitoramento
+.gitignore
+venv
+dados_monitoramento
