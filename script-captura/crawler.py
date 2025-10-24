@@ -8,6 +8,7 @@ from pynvml import *
 import mysql.connector
 import socket
 import sys 
+import subprocess
 
 # Pega o nome e IP da máquina
 nome_maquina = socket.gethostname()
@@ -119,22 +120,35 @@ def coletar_dados_hardware():
 def coletar_dados_processos():
     processos_info = []
 
-# aqui pegando a GPU por processo e fazendo um percentual na gambiarra (nao tem nativo na biblioteca)
+# aqui pegando a GPU por processo e fazendo um percentual com o nvidia-smi
+   
+    gpu_usage_por_pid = {}
+    total_mem = 1  # evita divisão por zero
     try:
-        nvmlInit()
-        handle = nvmlDeviceGetHandleByIndex(0) # pega a primeira gpu (no nosso caso so deve ter uma mesmo)
-        mem_info = nvmlDeviceGetMemoryInfo(handle) # informações de memória da gpu
-        total_mem = mem_info.total # memória total da gpu
-        gpu_procs = nvmlDeviceGetComputeRunningProcesses(handle) # processos usando a gpu
-        gpu_usage_por_pid = {p.pid: p.usedGpuMemory for p in gpu_procs}
+        # pega memória total da GPU
+        result_total = subprocess.run(
+            ['nvidia-smi', '--query-gpu=memory.total', '--format=csv,noheader,nounits'],
+            stdout=subprocess.PIPE
+        )
+        total_mem = int(result_total.stdout.decode().strip()) * 1024 * 1024  # converte para bytes
+
+        # pega processos que estão usando a GPU
+        result_procs = subprocess.run(
+            ['nvidia-smi', '--query-compute-apps=pid,used_gpu_memory', '--format=csv,noheader,nounits'],
+            stdout=subprocess.PIPE
+        )
+        linhas = result_procs.stdout.decode().strip().split('\n')
+        for linha in linhas:
+            try:
+                pid_str, mem_str = linha.split(', ')
+                pid = int(pid_str)
+                mem_bytes = int(mem_str) * 1024 * 1024  # converte para bytes
+                gpu_usage_por_pid[pid] = mem_bytes
+            except ValueError:
+                continue
     except:
         gpu_usage_por_pid = {}
-        total_mem = 1  # evita divisão por zero
-    finally:
-        try:
-            nvmlShutdown()
-        except:
-            pass
+        total_mem = 1
 
     for proc in psutil.process_iter():
         try:
@@ -150,8 +164,8 @@ def coletar_dados_processos():
             disco = round((proc.io_counters().write_bytes / (1024 ** 2)),1)
             ram = round((proc.memory_info().rss * 100 / psutil.virtual_memory().total),1)
 
-            pid = proc.pid # id do processo
-            used_gpu_mem = gpu_usage_por_pid.get(pid, 0) # memória gpu usada pelo processo
+            pid = proc.pid
+            used_gpu_mem = gpu_usage_por_pid.get(pid, 0) # memória usada pela GPU por este processo
             gpu_percent = round((used_gpu_mem / total_mem) * 100, 1) if used_gpu_mem else 0 # porcentagem do uso da gpu modo gambiarra
 
             if cpu > 0 or ram > 1 or disco > 1:
