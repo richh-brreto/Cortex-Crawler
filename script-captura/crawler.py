@@ -4,11 +4,10 @@ import time
 import os
 from datetime import datetime
 from uuid import getnode as get_mac
-import GPUtil as gputil
+from pynvml import *
 import mysql.connector
 import socket
 import sys 
-import subprocess
 
 # Pega o nome e IP da máquina
 nome_maquina = socket.gethostname()
@@ -62,20 +61,55 @@ CAMINHO_CHUNKS = os.path.join(CAMINHO_PASTA, NOME_CHUNK)
 
 # --- Funções de coletar dados de máquina  ---
 def coletar_dados_hardware():
+    # isso aqui é pra pegar o GPU
+    gpu_usage = 0
+    try:
+        nvmlInit()
+        gpu_count = nvmlDeviceGetCount()
+        if gpu_count > 0:
+            handle = nvmlDeviceGetHandleByIndex(0)
+            utilization = nvmlDeviceGetUtilizationRates(handle)
+            gpu_usage = utilization.gpu  # pega o percentual de uso da GPU
+    except Exception as e:
+        gpu_usage = 0  # caso de falha na leitura = 0%
+    finally:
+        try:
+            nvmlShutdown()
+        except:
+            pass  # ignora falha no shutdown (se der erro acima)
+
     return {
         'ip': ip,
-        'hostname':nome_maquina,
+        'hostname': nome_maquina,
         'timestamp': datetime.now().strftime('%Y-%m-%d_%H-%M-%S'),
         'cpu': psutil.cpu_percent(),
         'ram': psutil.virtual_memory().percent,
         'disco': psutil.disk_usage('/').percent,
-        'mac' : MAC_ADRESS,
-        'gpu': gputil.getGPUs()[0].load*100 if gputil.getGPUs() else 0
+        'mac': MAC_ADRESS,
+        'gpu': gpu_usage
     }
 
 #função para coletar processos
 def coletar_dados_processos():
     processos_info = []
+
+# aqui pegando a GPU por processo e fazendo um percentual na gambiarra (nao tem nativo na biblioteca)
+    try:
+        nvmlInit()
+        handle = nvmlDeviceGetHandleByIndex(0) # pega a primeira gpu (no nosso caso so deve ter uma mesmo)
+        mem_info = nvmlDeviceGetMemoryInfo(handle) # informações de memória da gpu
+        total_mem = mem_info.total # memória total da gpu
+        gpu_procs = nvmlDeviceGetComputeRunningProcesses(handle) # processos usando a gpu
+        gpu_usage_por_pid = {p.pid: p.usedGpuMemory for p in gpu_procs}
+    except:
+        gpu_usage_por_pid = {}
+        total_mem = 1  # evita divisão por zero
+    finally:
+        try:
+            nvmlShutdown()
+        except:
+            pass
+
     for proc in psutil.process_iter():
         try:
             proc.cpu_percent(interval=None)
@@ -89,7 +123,11 @@ def coletar_dados_processos():
             cpu = round(proc.cpu_percent(interval=None)/ psutil.cpu_count(logical=True),1)
             disco = round((proc.io_counters().write_bytes / (1024 ** 2)),1)
             ram = round((proc.memory_info().rss * 100 / psutil.virtual_memory().total),1)
-            gpu = gputil.getGPUs()[0].load*100 if gputil.getGPUs() else 0
+
+            pid = proc.pid # id do processo
+            used_gpu_mem = gpu_usage_por_pid.get(pid, 0) # memória gpu usada pelo processo
+            gpu_percent = round((used_gpu_mem / total_mem) * 100, 1) if used_gpu_mem else 0 # porcentagem do uso da gpu modo gambiarra
+
             if cpu > 0 or ram > 1 or disco > 1:
                 if ram < 1:
                     ram = 0
@@ -104,7 +142,7 @@ def coletar_dados_processos():
                     'ram' : ram,
                     'dados_gravados' : disco,
                     'mac' : MAC_ADRESS,
-                    'gpu' : gpu
+                    'gpu' : gpu_percent
                 })
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
