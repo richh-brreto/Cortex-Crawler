@@ -15,13 +15,17 @@ import platform
 nome_maquina = socket.gethostname()
 ip = socket.gethostbyname(nome_maquina)
 
+# pegar dados da env
+from dotenv import load_dotenv
+load_dotenv()
+
 # Configuração pra conectar no banco
 try:
     conexao = mysql.connector.connect(
-        host="localhost", # para apresentação colocar o IP do servidor
-        user="aluno",
-        password="sptech",
-        database="cortex"
+        host=os.getenv("DATABASE_HOST"),
+        user=os.getenv("DATABASE_USER"),
+        password=os.getenv("DATABASE_PASSWORD"),
+        database=os.getenv("DATABASE_USED")
     )
     cursor = conexao.cursor()
 
