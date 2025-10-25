@@ -9,6 +9,7 @@ import mysql.connector
 import socket
 import sys 
 import subprocess
+import platform
 
 # Pega o nome e IP da máquina
 nome_maquina = socket.gethostname()
@@ -119,36 +120,48 @@ def coletar_dados_hardware():
 #função para coletar processos
 def coletar_dados_processos():
     processos_info = []
-
-# aqui pegando a GPU por processo e fazendo um percentual com o nvidia-smi
+    sistema = platform.system()
    
     gpu_usage_por_pid = {}
-    total_mem = 1  # evita divisão por zero
-    try:
-        # pega memória total da GPU
-        result_total = subprocess.run(
-            ['nvidia-smi', '--query-gpu=memory.total', '--format=csv,noheader,nounits'],
-            stdout=subprocess.PIPE
-        )
-        total_mem = int(result_total.stdout.decode().strip()) * 1024 * 1024  # converte para bytes
 
-        # pega processos que estão usando a GPU
-        result_procs = subprocess.run(
-            ['nvidia-smi', '--query-compute-apps=pid,used_gpu_memory', '--format=csv,noheader,nounits'],
-            stdout=subprocess.PIPE
-        )
-        linhas = result_procs.stdout.decode().strip().split('\n')
-        for linha in linhas:
-            try:
-                pid_str, mem_str = linha.split(', ')
-                pid = int(pid_str)
-                mem_bytes = int(mem_str) * 1024 * 1024  # converte para bytes
-                gpu_usage_por_pid[pid] = mem_bytes
-            except ValueError:
-                continue
-    except:
-        gpu_usage_por_pid = {}
-        total_mem = 1
+    # ----- aqui se for windows -------
+    if sistema == "Windows":
+        try:
+            import wmi
+            f = wmi.WMI(namespace='root\\CIMV2')
+
+            # tabela de contadores de GPU (igual ao Gerenciador de Tarefas)
+            gpu_infos = f.Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine()
+            for info in gpu_infos:
+                # Exemplo: "pid_1234_luid_0x00000000_0_engtype_3D"
+                if "pid_" in info.Name:
+                    partes = info.Name.split("_")
+                    for i, p in enumerate(partes):
+                        if p == "pid" and i + 1 < len(partes):
+                            try:
+                                pid = int(partes[i + 1])
+                                gpu_usage_por_pid[pid] = gpu_usage_por_pid.get(pid, 0) + int(info.UtilizationPercentage)
+                            except ValueError:
+                                continue
+        except Exception as e:
+            gpu_usage_por_pid = {}
+
+    # ----- aqui se for linux -------
+    elif sistema == "Linux":
+        try:
+            result = subprocess.run(['nvidia-smi', 'pmon', '-c', '1'], stdout=subprocess.PIPE)
+            linhas = result.stdout.decode().strip().split('\n')
+            for linha in linhas[2:]:  # pula cabeçalho
+                partes = linha.split()
+                if len(partes) >= 6:
+                    try:
+                        pid = int(partes[1])
+                        mem = int(partes[4])  # uso de memória da GPU (%)
+                        gpu_usage_por_pid[pid] = mem
+                    except ValueError:
+                        continue
+        except Exception:
+            gpu_usage_por_pid = {}
 
     for proc in psutil.process_iter():
         try:
@@ -165,8 +178,7 @@ def coletar_dados_processos():
             ram = round((proc.memory_info().rss * 100 / psutil.virtual_memory().total),1)
 
             pid = proc.pid
-            used_gpu_mem = gpu_usage_por_pid.get(pid, 0) # memória usada pela GPU por este processo
-            gpu_percent = round((used_gpu_mem / total_mem) * 100, 1) if used_gpu_mem else 0 # porcentagem do uso da gpu modo gambiarra
+            gpu_percent = gpu_usage_por_pid.get(pid, 0)
 
             if cpu > 0 or ram > 1 or disco > 1:
                 if ram < 1:
