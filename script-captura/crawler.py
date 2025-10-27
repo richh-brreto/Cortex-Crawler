@@ -10,6 +10,7 @@ import socket
 import sys 
 import subprocess
 import platform
+import boto3
 
 # Pega o nome e IP da máquina
 nome_maquina = socket.gethostname()
@@ -271,6 +272,50 @@ def verificar_blacklist_processos(processos, nomes):
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
+def send_to_s3(local_folder, bucket_name=None, s3_prefix='data/'):
+# pra pegar o bucket do .env (nao esquecer de colocar lá)
+    if not bucket_name:
+        bucket_name = os.getenv("AWS_BUCKET_NAME")
+# é necessário caso vc não tenha configurado o ambiente, em geral vai ser mais rápido estar aqui senao vai ter q configurar
+    s3_client = boto3.client("s3",
+        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+        aws_secret_acess_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        aws_session_token=os.getenv("AWS_SESSION_TOKEN")
+    )
+
+    if not os.path.exists(local_folder):
+        registrar_log(f"Pasta {local_folder} não existe para upload.")
+        return False
+    
+    try: 
+        uploaded_files = 0
+
+#vendo lista no S3 para evitar duplicatas
+        existing_files = [] 
+        try:
+            response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=s3_prefix)
+            if "Contents" in response:
+                existing_files = [obj["Key"].split("/")[-1] for obj in response["Contents"]]
+        except Exception:
+            pass
+
+        for filename in os.listdir(local_folder):
+            local_path = os.path.join(local_folder, filename)
+
+            if filename not in existing_files:
+                if os.path.isfile(local_path):
+                    s3_key = f"{s3_prefix}{filename}" if s3_prefix else filename
+                    s3_client.upload_file(local_path, bucket_name, s3_key)
+                    print(f"Enviado {local_path} para s3://{bucket_name}/{s3_key}")
+                    uploaded_files += 1
+
+        print(f"Upload concluído, {uploaded_files} arquivo(s) enviado(s)")
+        return True
+        
+    except Exception as e:
+        print(f"Erro ao enviar pasta para S3: {e}")
+        return False
+
 # --- Lógica principal  ---
 def main():
     print("Iniciando o monitoramento. Pressione Ctrl+C a qualquer momento para sair.")
@@ -317,9 +362,25 @@ def main():
                 print(f"Captura finalizada. Dados salvos em {CAMINHO_ARQUIVO} e em {CAMINHO_ARQUIVO_PROCESSO}")
                 adicionar_a_chunks(NOME_ARQUIVO_PROCESSO)
                 adicionar_a_chunks(NOME_ARQUIVO)
-                inicio_captura = time.time()
-                dados_coletados = []
-                processos = []
+
+                try:
+                    sucesso = send_to_s3(
+                        local_folder=CAMINHO_PASTA,
+                        bucket_name=os.getenv("AWS_BUCKET_NAME"),
+                        s3_prefix="dados_monitoramento/"
+                    )
+                    if sucesso:
+                        registrar_log("Upload S3 concluído com sucesso.")
+                    else:
+                        registrar_log("Falha no upload para S3.")
+                except Exception as e:
+                    registrar_log(f"Erro no upload para S3: {e}")
+
+            inicio_captura = time.time()
+            dados_coletados = []
+            processos = []
+
+    
         except KeyboardInterrupt:
             print("\nMonitoramento interrompido pelo usuário.")
             registrar_log("Monitoramento interrompido manualmente.")
