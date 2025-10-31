@@ -31,22 +31,22 @@ try:
     cursor = conexao.cursor()
 
     #  verificando se a máquina com este IP e Hostname já existe
-    query_verifica = "SELECT id_modelo FROM modelo WHERE ip = %s AND hostname = %s"
-    cursor.execute(query_verifica, (ip, nome_maquina))
-    resultado = cursor.fetchone()
+    #query_verifica = "SELECT id_modelo FROM modelo WHERE ip = %s AND hostname = %s"
+    #cursor.execute(query_verifica, (ip, nome_maquina))
+    #resultado = cursor.fetchone()
 
    
-    if resultado is None:
-        print(f"Log: Máquina com IP {ip} e Hostname {nome_maquina} não cadastrada.")
-        print("O script não será executado.")
-        sys.exit()  
-    else:
+    #if resultado is None:
+    #    print(f"Log: Máquina com IP {ip} e Hostname {nome_maquina} não cadastrada.")
+    #    print("O script não será executado.")
+    #    sys.exit()  
+    #else:
         
-        print(f"Máquina com IP {ip} e Hostname {nome_maquina} encontrada. Iniciando script.")
+      #  print(f"Máquina com IP {ip} e Hostname {nome_maquina} encontrada. Iniciando script.")
 
     # Fechar a conexão de verificação
-    cursor.close()
-    conexao.close()
+    #cursor.close()
+    #conexao.close()
 
 except mysql.connector.Error as err:
     print(f"Erro ao conectar com o banco de dados: {err}")
@@ -238,39 +238,76 @@ def redefinir_caminho():
     return CAMINHO_ARQUIVO,NOME_ARQUIVO, NOME_ARQUIVO_PROCESSO, CAMINHO_ARQUIVO_PROCESSO
 
 def check_blacklist(conexao):
-    nomes = []
+    # carrega todos os processos da black_list 
     try:
-        cur = conexao.cursor()
-        cur.execute("SELECT nome FROM black_list")
+        cur = conexao.cursor(dictionary=True)  # precisa retornar dicionarios
+        cur.execute("SELECT nome, matar_processo, status FROM black_list")
         rows = cur.fetchall()
-        nomes = [r[0] for r in rows if r and r[0]]
         cur.close()
+        return rows
     except Exception as e:
         registrar_log(f"Erro ao carregar blacklist do banco: {e}")
-    return nomes
+        return []
 
-def verificar_blacklist_processos(processos, nomes):
-    nomes_lower = [n.lower() for n in nomes]
+def verificar_blacklist_processos(conexao, processos):
+    #Verifica e trata processos conforme regras da black_list.
+    blacklist = check_blacklist(conexao)
+    if not blacklist:
+        return
+
     for proc in psutil.process_iter(['name']):
         try:
             nome_proc = proc.info['name']
-            if nome_proc and nome_proc.lower() in nomes_lower:
-                # registra evento e chunk antes de matar
-                registrar_log(f"Processo da blacklist detectado: {nome_proc}")
-                adicionar_a_chunks(nome_proc)
+            if not nome_proc:
+                continue
 
-                # tenta matar (pode gerar AccessDenied se nao tiver admin)
-                try:
-                    proc.kill()
-                    registrar_log(f"Processo {nome_proc} foi encerrado automaticamente.")
-                except psutil.NoSuchProcess:
-                    registrar_log(f"Processo {nome_proc} já não existia ao tentar matar.")
-                except psutil.AccessDenied:
-                    registrar_log(f"Sem permissão para encerrar o processo {nome_proc}.")
-                except Exception as e:
-                    registrar_log(f"Erro ao encerrar processo {nome_proc}: {e}")
+            nome_lower = nome_proc.lower()
+
+            for item in blacklist:
+                nome_bl = item['nome'].lower()
+                matar = bool(item['matar_processo'])
+                status = item['status']
+
+                if nome_lower == nome_bl:
+                    # processo encontrado na blacklist
+                    registrar_log(f"Processo detectado na blacklist: {nome_proc} (status={status}, matar={matar})")
+                    adicionar_a_chunks(nome_proc)
+
+                    # automatico
+                    if status == "automatico":
+                        tentar_matar_processo(proc, nome_proc)
+
+                    # proibido (mata apenas se matar_processo=True)
+                    elif status == "proibido" and matar:
+                        tentar_matar_processo(proc, nome_proc)
+                        # atualiza matar_processo para FALSE
+                        try:
+                            cur = conexao.cursor()
+                            cur.execute("UPDATE black_list SET matar_processo = FALSE WHERE nome = %s", (item['nome'],))
+                            conexao.commit()
+                            cur.close()
+                            registrar_log(f"matar_processo de '{item['nome']}' atualizado para FALSE após execução.")
+                        except Exception as e:
+                            registrar_log(f"Erro ao atualizar black_list para {item['nome']}: {e}")
+
+                    # verificado (só registra)
+                    elif status == "verificado":
+                        registrar_log(f"Processo '{nome_proc}' verificado, mas não encerrado (status=verificado).")
+
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
+
+def tentar_matar_processo(proc, nome_proc):
+    #Tenta encerrar o processo e trata exceções.
+        try:
+            proc.kill()
+            registrar_log(f"Processo {nome_proc} encerrado automaticamente.")
+        except psutil.NoSuchProcess:
+            registrar_log(f"Processo {nome_proc} já não existia ao tentar matar.")
+        except psutil.AccessDenied:
+            registrar_log(f"Sem permissão para encerrar o processo {nome_proc}.")
+        except Exception as e:
+            registrar_log(f"Erro ao encerrar processo {nome_proc}: {e}")
 
 def send_to_s3(local_folder, bucket_name=None, s3_prefix='data/'):
 # pra pegar o bucket do .env (nao esquecer de colocar lá)
@@ -338,7 +375,6 @@ def main():
             df_processo = pd.DataFrame(processos)
             df_processo.to_csv(CAMINHO_ARQUIVO_PROCESSO, index=False)
 
-            nomes = []
             try:
                 conexao = mysql.connector.connect(
                     host="localhost",
@@ -346,14 +382,11 @@ def main():
                     password="sptech",
                     database="cortex"
                 )
-                nomes = check_blacklist(conexao)
+                verificar_blacklist_processos(conexao, processos)
                 conexao.close()
             except Exception as e:
                 registrar_log(f"Erro ao conectar/consultar blacklist: {e}")
-                nomes = []
-            # se houver nomes na blacklist, verificar e encerrar (após gravação)
-            if nomes:
-                verificar_blacklist_processos(processos, nomes)
+                nomes = check_blacklist(conexao)
             
             if time.time() - inicio_captura >= DURACAO_CAPTURA:
                 redefinir_caminho()
