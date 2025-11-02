@@ -11,52 +11,18 @@ import sys
 import subprocess
 import platform
 import boto3
-
-# Pega o nome e IP da máquina
-nome_maquina = socket.gethostname()
-ip = socket.gethostbyname(nome_maquina)
-
-# pegar dados da env
 from dotenv import load_dotenv
+
+# --- Config e identificação ---
 load_dotenv()
 
-# Configuração pra conectar no banco
-try:
-    conexao = mysql.connector.connect(
-        host=os.getenv("DATABASE_HOST"),
-        user=os.getenv("DATABASE_USER"),
-        password=os.getenv("DATABASE_PASSWORD"),
-        database=os.getenv("DATABASE_USED")
-    )
-    cursor = conexao.cursor()
-
-    #  verificando se a máquina com este IP e Hostname já existe
-    #query_verifica = "SELECT id_modelo FROM modelo WHERE ip = %s AND hostname = %s"
-    #cursor.execute(query_verifica, (ip, nome_maquina))
-    #resultado = cursor.fetchone()
-
-   
-    #if resultado is None:
-    #    print(f"Log: Máquina com IP {ip} e Hostname {nome_maquina} não cadastrada.")
-    #    print("O script não será executado.")
-    #    sys.exit()  
-    #else:
-        
-      #  print(f"Máquina com IP {ip} e Hostname {nome_maquina} encontrada. Iniciando script.")
-
-    # Fechar a conexão de verificação
-    #cursor.close()
-    #conexao.close()
-
-except mysql.connector.Error as err:
-    print(f"Erro ao conectar com o banco de dados: {err}")
-    print("O script não pode continuar sem a verificação no banco.")
-    sys.exit() # Encerra se não conseguir conectar ao banco
+nome_maquina = socket.gethostname()
+ip = socket.gethostbyname(nome_maquina)
+MAC_ADRESS = get_mac()
 
 # --- Configurações do projeto ---
 DURACAO_CAPTURA = 1 * 60 
 CAMINHO_PASTA = 'dados_monitoramento'
-MAC_ADRESS = get_mac()
 NOME_ARQUIVO = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')} - {MAC_ADRESS}.csv"
 NOME_ARQUIVO_PROCESSO = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}-Processos {MAC_ADRESS}.csv"
 CAMINHO_ARQUIVO = os.path.join(CAMINHO_PASTA, NOME_ARQUIVO)
@@ -66,14 +32,50 @@ CAMINHO_LOG = os.path.join(CAMINHO_PASTA, NOME_LOG)
 NOME_CHUNK = f"chunks_processados_{MAC_ADRESS}.csv"
 CAMINHO_CHUNKS = os.path.join(CAMINHO_PASTA, NOME_CHUNK)
 
+DRY_RUN = False  # True = simula, False = mata processos
 
-# --- Funções de coletar dados de máquina  ---
+# --- Processos protegidos ---
+PROTECTED = {
+    "system", "idle", "init", "explorer.exe", "explorer", "python.exe", "python", "mysqld", "mysqld.exe",
+    "svchost.exe", "svchost", "winlogon.exe", "csrss.exe", "services.exe", "lsass.exe", "smss.exe",
+    "taskhostw.exe", "systemd", "kthreadd", "rcu_sched"
+}
+
+# --- Verificação inicial ---
+try:
+    conexao = mysql.connector.connect(
+        host="localhost",
+        user="root",
+        password="sptech",
+        database="cortex"
+    )
+    cursor = conexao.cursor(buffered=True)
+    query_verifica = "SELECT id_modelo FROM modelo WHERE ip = %s AND hostname = %s"
+    cursor.execute(query_verifica, (ip, nome_maquina))
+    resultado = cursor.fetchone()
+
+    if resultado is None:
+        print(f"Máquina {ip} / {nome_maquina} não cadastrada. Script finalizado.")
+        cursor.close()
+        conexao.close()
+        sys.exit()
+    else:
+        fk_modelo = resultado[0]
+        print(f"Máquina encontrada (fk_modelo={fk_modelo}). Iniciando script.")
+
+    cursor.close()
+    conexao.close()
+
+except mysql.connector.Error as err:
+    print(f"Erro no banco: {err}")
+    sys.exit()
+
+# --- Funções de coleta ---
 def coletar_dados_hardware():
     ultima_io = psutil.disk_io_counters()
     ultimo_tempo = time.time()
 
     time.sleep(3)
-    # isso aqui é pra pegar o GPU
     gpu_usage = 0
     try:
         nvmlInit()
@@ -81,14 +83,14 @@ def coletar_dados_hardware():
         if gpu_count > 0:
             handle = nvmlDeviceGetHandleByIndex(0)
             utilization = nvmlDeviceGetUtilizationRates(handle)
-            gpu_usage = utilization.gpu  # pega o percentual de uso da GPU
-    except Exception as e:
-        gpu_usage = 0  # caso de falha na leitura = 0%
+            gpu_usage = utilization.gpu
+    except Exception:
+        gpu_usage = 0
     finally:
         try:
             nvmlShutdown()
         except:
-            pass  # ignora falha no shutdown (se der erro acima)
+            pass
 
         atual_io = psutil.disk_io_counters()
         atual_tempo = time.time()
@@ -96,19 +98,14 @@ def coletar_dados_hardware():
 
     disco_uso_percent = 0
     if tempo_decorrido > 0:
-        if hasattr(atual_io, 'busy_time') and hasattr(ultima_io, 'busy_time'): #busca se tem o atributo busy_time (tempo ocupado)
-            # usa o tempo que o disco esteve ocupado
+        if hasattr(atual_io, 'busy_time') and hasattr(ultima_io, 'busy_time'):
             busy_diff = atual_io.busy_time - ultima_io.busy_time
             disco_uso_percent = round((busy_diff / (tempo_decorrido * 1000)) * 100, 1)
         else:
-            # calcula baseado na soma de leitura e escrita
-            read_diff = atual_io.read_bytes - ultima_io.read_bytes # calcula quantos bytes foram lidos desde a última coleta
-            write_diff = atual_io.write_bytes - ultima_io.write_bytes # calcula quantos bytes foram escritos desde a última coleta
-            total_diff = read_diff + write_diff # total de bytes lidos e escritos
-            disco_uso_percent = round(min(100, total_diff / (1024 ** 2) / tempo_decorrido), 1) # converte para MB/s e calcula o percentual
-
-    ultima_io = atual_io
-    ultimo_tempo = atual_tempo
+            read_diff = atual_io.read_bytes - ultima_io.read_bytes
+            write_diff = atual_io.write_bytes - ultima_io.write_bytes
+            total_diff = read_diff + write_diff
+            disco_uso_percent = round(min(100, total_diff / (1024 ** 2) / tempo_decorrido), 1)
 
     return {
         'ip': ip,
@@ -122,23 +119,17 @@ def coletar_dados_hardware():
         'gpu': gpu_usage
     }
 
-#função para coletar processos
 def coletar_dados_processos():
     processos_info = []
     sistema = platform.system()
-   
     gpu_usage_por_pid = {}
 
-    # ----- aqui se for windows -------
     if sistema == "Windows":
         try:
             import wmi
             f = wmi.WMI(namespace='root\\CIMV2')
-
-            # tabela de contadores de GPU (igual ao Gerenciador de Tarefas)
             gpu_infos = f.Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine()
             for info in gpu_infos:
-                # Exemplo: "pid_1234_luid_0x00000000_0_engtype_3D"
                 if "pid_" in info.Name:
                     partes = info.Name.split("_")
                     for i, p in enumerate(partes):
@@ -148,20 +139,18 @@ def coletar_dados_processos():
                                 gpu_usage_por_pid[pid] = gpu_usage_por_pid.get(pid, 0) + int(info.UtilizationPercentage)
                             except ValueError:
                                 continue
-        except Exception as e:
+        except Exception:
             gpu_usage_por_pid = {}
-
-    # ----- aqui se for linux -------
     elif sistema == "Linux":
         try:
             result = subprocess.run(['nvidia-smi', 'pmon', '-c', '1'], stdout=subprocess.PIPE)
             linhas = result.stdout.decode().strip().split('\n')
-            for linha in linhas[2:]:  # pula cabeçalho
+            for linha in linhas[2:]:
                 partes = linha.split()
                 if len(partes) >= 6:
                     try:
                         pid = int(partes[1])
-                        mem = int(partes[4])  # uso de memória da GPU (%)
+                        mem = int(partes[4])
                         gpu_usage_por_pid[pid] = mem
                     except ValueError:
                         continue
@@ -179,8 +168,15 @@ def coletar_dados_processos():
     for proc in psutil.process_iter():
         try:
             cpu = round(proc.cpu_percent(interval=None)/ psutil.cpu_count(logical=True),1)
-            disco = round((proc.io_counters().write_bytes / (1024 ** 2)),1)
-            ram = round((proc.memory_info().rss * 100 / psutil.virtual_memory().total),1)
+            disco = 0
+            try:
+                disco = round((proc.io_counters().write_bytes / (1024 ** 2)),1)
+            except Exception:
+                disco = 0
+            try:
+                ram = round((proc.memory_info().rss * 100 / psutil.virtual_memory().total),1)
+            except Exception:
+                ram = 0
 
             pid = proc.pid
             gpu_percent = gpu_usage_por_pid.get(pid, 0)
@@ -190,7 +186,7 @@ def coletar_dados_processos():
                     ram = 0
                 if disco < 1:
                     disco = 0
-                processos_info.append({ 
+                processos_info.append({
                     'ip': ip,
                     'hostname':nome_maquina,
                     'timestamp' : datetime.now().strftime('%Y-%m-%d_%H-%M-%S'),
@@ -200,12 +196,13 @@ def coletar_dados_processos():
                     'dados_gravados' : disco,
                     'mac' : MAC_ADRESS,
                     'gpu' : gpu_percent,
-                    'disco_uso' : proc.io_counters().write_bytes # aqui vai pegar o quanto o processo em si ta usando de disco em bytes
+                    'disco_uso' : proc.io_counters().write_bytes if proc.io_counters() else 0
                 })
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
     return processos_info
-    
+
+# --- Funções auxiliares ---
 def salvar_arquivo(dataFrame,CAMINHO):
     if os.path.exists(CAMINHO):
         dataFrame.to_csv(CAMINHO, mode='a', header=False, index=False)
@@ -237,86 +234,173 @@ def redefinir_caminho():
     CAMINHO_ARQUIVO_PROCESSO = os.path.join(CAMINHO_PASTA, NOME_ARQUIVO_PROCESSO)
     return CAMINHO_ARQUIVO,NOME_ARQUIVO, NOME_ARQUIVO_PROCESSO, CAMINHO_ARQUIVO_PROCESSO
 
-def check_blacklist(conexao):
-    # carrega todos os processos da black_list 
+# --- Whitelist ---
+def check_whitelist(conexao, fk_modelo): #Essa função retorna os nomes da whitelist, OU SEJA,os processos que devem/podem estar ali
+    nomes = set()
+    cur = None
     try:
-        cur = conexao.cursor(dictionary=True)  # precisa retornar dicionarios
-        cur.execute("SELECT nome, matar_processo, status FROM black_list")
-        rows = cur.fetchall()
-        cur.close()
-        return rows
+        cur = conexao.cursor(buffered=True)
+        cur.execute("SELECT nome FROM whitelist WHERE fk_modelo = %s", (fk_modelo,))
+        for r in cur.fetchall():
+            if not r or not r[0]:
+                continue
+            n = str(r[0]).strip().lower()
+            if n.endswith(".exe"):
+                n = n[:-4]
+            nomes.add(os.path.basename(n))
     except Exception as e:
-        registrar_log(f"Erro ao carregar blacklist do banco: {e}")
-        return []
+        registrar_log(f"Erro ao carregar whitelist: {e}")
+    finally:
+        if cur:
+            cur.close()
+    return nomes
 
-def verificar_blacklist_processos(conexao, processos):
-    #Verifica e trata processos conforme regras da black_list.
-    blacklist = check_blacklist(conexao)
-    if not blacklist:
-        return
+def check_whitelist_matar(conexao, fk_modelo):
+    nomes = []
+    cur = None
+    try:
+        cur = conexao.cursor(buffered=True)
+        cur.execute("SELECT id_processo, nome, matar FROM whitelist WHERE fk_modelo = %s", (fk_modelo,))
+        for r in cur.fetchall():
+            if not r or not r[1]:
+                continue
+            id_whitelist = r[0]
+            n = str(r[1]).strip().lower()
+            if n.endswith(".exe"):
+                n = n[:-4]
+            nomes.append((id_whitelist, os.path.basename(n), bool(r[2])))
+    except Exception as e:
+        registrar_log(f"Erro ao carregar whitelist com matar do banco: {e}")
+    finally:
+        if cur:
+            cur.close()
+    return nomes
 
-    for proc in psutil.process_iter(['name']):
-        try:
-            nome_proc = proc.info['name']
-            if not nome_proc:
+
+def aplicar_matar_processos(conexao, whitelist_com_matar, fk_modelo):
+    #Aqui mata os processos que ESTÃO na whitelist mas com o matar = true
+    for id_whitelist, nome_proc, matar_flag in whitelist_com_matar:
+        if not matar_flag:
+            continue
+
+        # Normaliza nome do processo do banco
+        nome_proc_db = nome_proc.strip().lower()
+        if nome_proc_db.endswith(".exe"):
+            nome_proc_db = nome_proc_db[:-4]
+
+        for proc in psutil.process_iter(['pid', 'name']):
+            try:
+                nome_proc_atual = proc.info.get('name') or ''
+                nome_proc_norm = os.path.basename(nome_proc_atual.strip()).lower()
+                if nome_proc_norm.endswith(".exe"):
+                    nome_proc_norm = nome_proc_norm[:-4]
+
+                if nome_proc_norm == nome_proc_db:
+                    try:
+                        if not DRY_RUN:
+                            proc.kill()
+                        registrar_log(f"Processo '{nome_proc}' morto por flag matar=True")
+                    except psutil.AccessDenied:
+                        registrar_log(f"Permissão negada ao tentar matar '{nome_proc}'")
+                    except psutil.NoSuchProcess:
+                        registrar_log(f"Processo '{nome_proc}' já não existe")
+                    except Exception as e:
+                        registrar_log(f"Erro desconhecido ao matar '{nome_proc}': {e}")
+
+                    # registra no log_processos
+                    try:
+                        cur_log = conexao.cursor()
+                        cur_log.execute(
+                            "INSERT INTO log_processos (nome, fk_modelo) VALUES (%s, %s)",
+                            (nome_proc, fk_modelo)
+                        )
+                        conexao.commit()
+                        cur_log.close()
+                    except Exception as e:
+                        registrar_log(f"Erro ao registrar '{nome_proc}' no log_processos: {e}")
+
+                    # atualiza matar = 0 no banco
+                    try:
+                        cur = conexao.cursor()
+                        cur.execute(
+                            "UPDATE whitelist SET matar = 0 WHERE id_processo = %s",
+                            (id_whitelist,)
+                        )
+                        conexao.commit()
+                        cur.close()
+                    except Exception as e:
+                        registrar_log(f"Erro ao atualizar matar=False no banco para '{nome_proc}': {e}")
+
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
 
-            nome_lower = nome_proc.lower()
 
-            for item in blacklist:
-                nome_bl = item['nome'].lower()
-                matar = bool(item['matar_processo'])
-                status = item['status']
 
-                if nome_lower == nome_bl:
-                    # processo encontrado na blacklist
-                    registrar_log(f"Processo detectado na blacklist: {nome_proc} (status={status}, matar={matar})")
-                    adicionar_a_chunks(nome_proc)
+# --- Detectar processos fora da whitelist ---
+detected_outside_whitelist = set()
+def verificar_whitelist_processos(processos, nomes_set):
+    nomes_normalizados = {n.lower() for n in nomes_set}
+    for p in processos:
+        nome_proc = os.path.basename(p['processo']).lower()
+        if nome_proc.endswith(".exe"):
+            nome_proc = nome_proc[:-4]
+        if nome_proc not in nomes_normalizados and nome_proc not in PROTECTED:
+            if nome_proc not in detected_outside_whitelist:
+                registrar_log(f"Processo fora da whitelist detectado: {nome_proc}")
+                detected_outside_whitelist.add(nome_proc)
 
-                    # automatico
-                    if status == "automatico":
-                        tentar_matar_processo(proc, nome_proc)
+def matar_fora_whitelist(conexao, processos, nomes_whitelist):
+   
+ #Aqui mata os processos ativos q estão fora da blacklist
+    nomes_whitelist = {n.lower() for n in nomes_whitelist}
 
-                    # proibido (mata apenas se matar_processo=True)
-                    elif status == "proibido" and matar:
-                        tentar_matar_processo(proc, nome_proc)
-                        # atualiza matar_processo para FALSE
-                        try:
-                            cur = conexao.cursor()
-                            cur.execute("UPDATE black_list SET matar_processo = FALSE WHERE nome = %s", (item['nome'],))
-                            conexao.commit()
-                            cur.close()
-                            registrar_log(f"matar_processo de '{item['nome']}' atualizado para FALSE após execução.")
-                        except Exception as e:
-                            registrar_log(f"Erro ao atualizar black_list para {item['nome']}: {e}")
-
-                    # verificado (só registra)
-                    elif status == "verificado":
-                        registrar_log(f"Processo '{nome_proc}' verificado, mas não encerrado (status=verificado).")
-
+    #  dicionário de processos ativos por nome 
+    processos_ativos = {}
+    for proc in psutil.process_iter(['pid', 'name']):
+        try:
+            nome = (proc.info.get('name') or '').strip().lower()
+            if nome.endswith(".exe"):
+                nome = nome[:-4]
+            if nome not in processos_ativos:
+                processos_ativos[nome] = []
+            processos_ativos[nome].append(proc)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
 
-def tentar_matar_processo(proc, nome_proc):
-    #Tenta encerrar o processo e trata exceções.
-        try:
-            proc.kill()
-            registrar_log(f"Processo {nome_proc} encerrado automaticamente.")
-        except psutil.NoSuchProcess:
-            registrar_log(f"Processo {nome_proc} já não existia ao tentar matar.")
-        except psutil.AccessDenied:
-            registrar_log(f"Sem permissão para encerrar o processo {nome_proc}.")
-        except Exception as e:
-            registrar_log(f"Erro ao encerrar processo {nome_proc}: {e}")
+    # --- Iterar apenas pelos nomes fora da whitelist e protegidos ---
+    for nome_proc, lista_proc in processos_ativos.items():
+        if nome_proc in nomes_whitelist or nome_proc in PROTECTED:
+            continue
 
+        for proc in lista_proc:
+            try:
+                if not DRY_RUN:
+                    proc.kill()
+                registrar_log(f"Processo fora da whitelist morto: {nome_proc}")
+
+                # Log no banco
+                try:
+                    cur_log = conexao.cursor()
+                    cur_log.execute(
+                        "INSERT INTO log_processos (nome, fk_modelo) VALUES (%s, %s)",
+                        (nome_proc, fk_modelo)
+                    )
+                    conexao.commit()
+                    cur_log.close()
+                except Exception as e:
+                    registrar_log(f"Erro ao registrar {nome_proc} no log_processos: {e}")
+
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+
+
+# --- S3 upload ---
 def send_to_s3(local_folder, bucket_name=None, s3_prefix='data/'):
-# pra pegar o bucket do .env (nao esquecer de colocar lá)
     if not bucket_name:
         bucket_name = os.getenv("AWS_BUCKET_NAME")
-# é necessário caso vc não tenha configurado o ambiente, em geral vai ser mais rápido estar aqui senao vai ter q configurar
     s3_client = boto3.client("s3",
         aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-        aws_secret_acess_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
         aws_session_token=os.getenv("AWS_SESSION_TOKEN")
     )
 
@@ -324,84 +408,89 @@ def send_to_s3(local_folder, bucket_name=None, s3_prefix='data/'):
         registrar_log(f"Pasta {local_folder} não existe para upload.")
         return False
     
-    try: 
+    try:
         uploaded_files = 0
-
-#vendo lista no S3 para evitar duplicatas
-        existing_files = [] 
+        existing_files = []
         try:
             response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=s3_prefix)
             if "Contents" in response:
                 existing_files = [obj["Key"].split("/")[-1] for obj in response["Contents"]]
         except Exception:
-            pass
+            existing_files = []
 
         for filename in os.listdir(local_folder):
             local_path = os.path.join(local_folder, filename)
-
-            if filename not in existing_files:
-                if os.path.isfile(local_path):
-                    s3_key = f"{s3_prefix}{filename}" if s3_prefix else filename
-                    s3_client.upload_file(local_path, bucket_name, s3_key)
-                    print(f"Enviado {local_path} para s3://{bucket_name}/{s3_key}")
-                    uploaded_files += 1
+            if filename not in existing_files and os.path.isfile(local_path):
+                s3_key = f"{s3_prefix}{filename}" if s3_prefix else filename
+                s3_client.upload_file(local_path, bucket_name, s3_key)
+                print(f"Enviado {local_path} para s3://{bucket_name}/{s3_key}")
+                uploaded_files += 1
 
         print(f"Upload concluído, {uploaded_files} arquivo(s) enviado(s)")
         return True
-        
     except Exception as e:
         print(f"Erro ao enviar pasta para S3: {e}")
         return False
 
-# --- Lógica principal  ---
+# --- Main ---
 def main():
-    print("Iniciando o monitoramento. Pressione Ctrl+C a qualquer momento para sair.")
+    print("Iniciando o monitoramento. Pressione Ctrl+C para parar.")
+    
     if not os.path.exists(CAMINHO_PASTA):
         os.makedirs(CAMINHO_PASTA)
+    
     inicio_captura = time.time()
     dados_coletados = []
-    processos = []
+    processos_coletados = []
     redefinir_caminho()
+
+    try:
+        conexao = mysql.connector.connect(host="localhost", user="aluno", password="sptech", database="cortex")
+        processos_coletados = coletar_dados_processos()
+        nomes_whitelist = check_whitelist(conexao, fk_modelo)
+        matar_fora_whitelist(conexao, processos_coletados, nomes_whitelist)
+        whitelist_com_matar = check_whitelist_matar(conexao, fk_modelo)
+        aplicar_matar_processos(conexao, whitelist_com_matar, fk_modelo)
+        conexao.close()
+    except Exception as e:
+        registrar_log(f"Erro ao carregar whitelist inicial: {e}")
+        nomes_whitelist = set()
+
     while True:
         try:
+            conexao = mysql.connector.connect(host="localhost", user="aluno", password="sptech", database="cortex")
             time.sleep(1)
             dados_coletados.append(coletar_dados_hardware())
+            processos_coletados = coletar_dados_processos()
+            matar_fora_whitelist(conexao, processos_coletados, nomes_whitelist)
 
-            processos = coletar_dados_processos()
 
-            df_dados = pd.DataFrame(dados_coletados)
-            df_dados.to_csv(CAMINHO_ARQUIVO, index=False)
+            df_hardware = pd.DataFrame(dados_coletados)
+            salvar_arquivo(df_hardware, CAMINHO_ARQUIVO)
 
-            df_processo = pd.DataFrame(processos)
-            df_processo.to_csv(CAMINHO_ARQUIVO_PROCESSO, index=False)
+            df_proc = pd.DataFrame(processos_coletados)
+            salvar_arquivo(df_proc, CAMINHO_ARQUIVO_PROCESSO)
 
             try:
-                conexao = mysql.connector.connect(
-                    host="localhost",
-                    user="aluno",
-                    password="sptech",
-                    database="cortex"
-                )
-                verificar_blacklist_processos(conexao, processos)
+                whitelist_com_matar = check_whitelist_matar(conexao, fk_modelo)
+                aplicar_matar_processos(conexao, whitelist_com_matar,fk_modelo) 
+                nomes_whitelist = check_whitelist(conexao, fk_modelo)
                 conexao.close()
             except Exception as e:
-                registrar_log(f"Erro ao conectar/consultar blacklist: {e}")
-                nomes = check_blacklist(conexao)
-            
+                registrar_log(f"Erro ao atualizar whitelist: {e}")
+
+            if nomes_whitelist:
+                verificar_whitelist_processos(processos_coletados, nomes_whitelist)
+
             if time.time() - inicio_captura >= DURACAO_CAPTURA:
                 redefinir_caminho()
                 registrar_log(f"Novo arquivo de dados criado: {NOME_ARQUIVO}")
-                registrar_log(f"Novo arquivo de dados criado: {NOME_ARQUIVO_PROCESSO}")
-                print(f"Captura finalizada. Dados salvos em {CAMINHO_ARQUIVO} e em {CAMINHO_ARQUIVO_PROCESSO}")
-                adicionar_a_chunks(NOME_ARQUIVO_PROCESSO)
+                registrar_log(f"Novo arquivo de processos criado: {NOME_ARQUIVO_PROCESSO}")
                 adicionar_a_chunks(NOME_ARQUIVO)
+                adicionar_a_chunks(NOME_ARQUIVO_PROCESSO)
 
                 try:
-                    sucesso = send_to_s3(
-                        local_folder=CAMINHO_PASTA,
-                        bucket_name=os.getenv("AWS_BUCKET_NAME"),
-                        s3_prefix="dados_monitoramento/"
-                    )
+                    sucesso = send_to_s3(CAMINHO_PASTA, bucket_name=os.getenv("AWS_BUCKET_NAME"), s3_prefix="dados_monitoramento/")
                     if sucesso:
                         registrar_log("Upload S3 concluído com sucesso.")
                     else:
@@ -409,11 +498,10 @@ def main():
                 except Exception as e:
                     registrar_log(f"Erro no upload para S3: {e}")
 
-            inicio_captura = time.time()
-            dados_coletados = []
-            processos = []
+                inicio_captura = time.time()
+                dados_coletados = []
+                processos_coletados = []
 
-    
         except KeyboardInterrupt:
             print("\nMonitoramento interrompido pelo usuário.")
             registrar_log("Monitoramento interrompido manualmente.")
