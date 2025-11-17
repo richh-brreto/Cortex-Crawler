@@ -16,23 +16,18 @@ from dotenv import load_dotenv
 # --- Config e identificação ---
 load_dotenv()
 
-nome_maquina = socket.gethostname()
-ip = socket.gethostbyname(nome_maquina)
-MAC_ADRESS = get_mac()
+# nome_maquina = socket.gethostname()
+# ip = socket.gethostbyname(nome_maquina)
+nome_maquina = "DESKTOP-N2E1DHL"
+ip = "10.102.136.40"
 
 # --- Configurações do projeto ---
 DURACAO_CAPTURA = 1 * 60 
 CAMINHO_PASTA = 'dados_monitoramento'
-NOME_ARQUIVO = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')} - {MAC_ADRESS}.csv"
-NOME_ARQUIVO_PROCESSO = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}-Processos {MAC_ADRESS}.csv"
-CAMINHO_ARQUIVO = os.path.join(CAMINHO_PASTA, NOME_ARQUIVO)
-CAMINHO_ARQUIVO_PROCESSO = os.path.join(CAMINHO_PASTA, NOME_ARQUIVO_PROCESSO)
-NOME_LOG = f"log_processamento_{MAC_ADRESS}.csv"
-CAMINHO_LOG = os.path.join(CAMINHO_PASTA, NOME_LOG)
-NOME_CHUNK = f"chunks_processados_{MAC_ADRESS}.csv"
-CAMINHO_CHUNKS = os.path.join(CAMINHO_PASTA, NOME_CHUNK)
 
-DRY_RUN = False  # True = simula, False = mata processos
+
+
+DRY_RUN = True  # True = simula, False = mata processos
 
 # --- Processos protegidos ---
 PROTECTED = {
@@ -45,12 +40,12 @@ PROTECTED = {
 try:
     conexao = mysql.connector.connect(
         host="localhost",
-        user="root",
+        user="aluno",
         password="sptech",
         database="cortex"
     )
     cursor = conexao.cursor(buffered=True)
-    query_verifica = "SELECT id_modelo FROM modelo WHERE ip = %s AND hostname = %s"
+    query_verifica = "select m.id_modelo, z.id_zona , e.id from modelo as m inner join cliente as c on m.fk_cliente =  c.id_cliente inner join empresa as e on c.fk_empresa = e.id inner join zonadisponibilidade as z on z.id_zona = m.fk_zona_disponibilidade where m.ip = %s and m.hostname = %s;"
     cursor.execute(query_verifica, (ip, nome_maquina))
     resultado = cursor.fetchone()
 
@@ -61,7 +56,9 @@ try:
         sys.exit()
     else:
         fk_modelo = resultado[0]
-        print(f"Máquina encontrada (fk_modelo={fk_modelo}). Iniciando script.")
+        fk_zona = resultado[1]
+        fk_empresa = resultado[2]
+        print(f"Máquina encontrada (fk_modelo={fk_modelo}, fk_zona={fk_zona}, fk_empresa={fk_empresa}). Iniciando script.")
 
     cursor.close()
     conexao.close()
@@ -69,6 +66,17 @@ try:
 except mysql.connector.Error as err:
     print(f"Erro no banco: {err}")
     sys.exit()
+
+# --- Configurações do projeto que dependem do banco ---
+
+NOME_ARQUIVO = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')};{fk_modelo};{fk_zona};{fk_empresa}.csv" #AQUI
+NOME_ARQUIVO_PROCESSO = f"Processos;{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')};{fk_modelo};{fk_zona};{fk_empresa};.csv" #AQUI
+CAMINHO_ARQUIVO = os.path.join(CAMINHO_PASTA, NOME_ARQUIVO)
+CAMINHO_ARQUIVO_PROCESSO = os.path.join(CAMINHO_PASTA, NOME_ARQUIVO_PROCESSO)
+NOME_LOG = f"log_processamento;{fk_modelo};{fk_zona};{fk_empresa}.csv" #AQUI
+CAMINHO_LOG = os.path.join(CAMINHO_PASTA, NOME_LOG)
+NOME_CHUNK = f"chunks_processados;{fk_modelo};{fk_zona};{fk_empresa}.csv"  #AQUI
+CAMINHO_CHUNKS = os.path.join(CAMINHO_PASTA, NOME_CHUNK)
 
 # --- Funções de coleta ---
 def coletar_dados_hardware():
@@ -108,15 +116,14 @@ def coletar_dados_hardware():
             disco_uso_percent = round(min(100, total_diff / (1024 ** 2) / tempo_decorrido), 1)
 
     return {
-        'ip': ip,
-        'hostname': nome_maquina,
+        'fk_modelo': fk_modelo,
+        'fk_zona': fk_zona,
+        'fk_empresa' : fk_empresa,
         'timestamp': datetime.now().strftime('%Y-%m-%d_%H-%M-%S'),
         'cpu': psutil.cpu_percent(),
         'ram': psutil.virtual_memory().percent,
         'armazenamento': psutil.disk_usage('/').percent,
         'disco_uso': disco_uso_percent,
-        'mac': MAC_ADRESS,
-        'gpu': gpu_usage
     }
 
 def coletar_dados_processos():
@@ -187,14 +194,14 @@ def coletar_dados_processos():
                 if disco < 1:
                     disco = 0
                 processos_info.append({
-                    'ip': ip,
-                    'hostname':nome_maquina,
+                    'fk_modelo': fk_modelo,
+                    'fk_zona':fk_zona,
+                    'fk_empresa' : fk_empresa,
                     'timestamp' : datetime.now().strftime('%Y-%m-%d_%H-%M-%S'),
                     'processo' : proc.name(),
                     'cpu' : cpu,
                     'ram' : ram,
                     'dados_gravados' : disco,
-                    'mac' : MAC_ADRESS,
                     'gpu' : gpu_percent,
                     'disco_uso' : proc.io_counters().write_bytes if proc.io_counters() else 0
                 })
@@ -211,11 +218,11 @@ def salvar_arquivo(dataFrame,CAMINHO):
 
 def registrar_log(mensagem):
     log_data = pd.DataFrame([{
-        'ip':ip,
-        'hostname':nome_maquina,
+        'fk_modelo':fk_modelo,
+        'fk_zona' : fk_zona,
+        'fk_empresa':fk_empresa,
         'timestamp': datetime.now(),
-        'evento': mensagem,
-        'mac' : MAC_ADRESS
+        'evento': mensagem
     }])
     salvar_arquivo(log_data,CAMINHO_LOG)
 
@@ -228,9 +235,9 @@ def adicionar_a_chunks(nome_arquivo):
 
 def redefinir_caminho():
     global NOME_ARQUIVO, CAMINHO_ARQUIVO, NOME_ARQUIVO_PROCESSO, CAMINHO_ARQUIVO_PROCESSO
-    NOME_ARQUIVO = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')} - {MAC_ADRESS}.csv"
+    NOME_ARQUIVO = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')};{fk_modelo};{fk_zona};{fk_empresa}.csv" #AQUI
     CAMINHO_ARQUIVO = os.path.join(CAMINHO_PASTA, NOME_ARQUIVO)
-    NOME_ARQUIVO_PROCESSO = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}-Processos {MAC_ADRESS}.csv"
+    NOME_ARQUIVO_PROCESSO = f"Processos;{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')};{fk_modelo};{fk_zona};{fk_empresa};.csv" #AQUI
     CAMINHO_ARQUIVO_PROCESSO = os.path.join(CAMINHO_PASTA, NOME_ARQUIVO_PROCESSO)
     return CAMINHO_ARQUIVO,NOME_ARQUIVO, NOME_ARQUIVO_PROCESSO, CAMINHO_ARQUIVO_PROCESSO
 
