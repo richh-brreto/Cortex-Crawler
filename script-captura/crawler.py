@@ -124,6 +124,7 @@ def coletar_dados_hardware():
         'ram': psutil.virtual_memory().percent,
         'armazenamento': psutil.disk_usage('/').percent,
         'disco_uso': disco_uso_percent,
+        'gpu' : gpu_usage
     }
 
 def coletar_dados_processos():
