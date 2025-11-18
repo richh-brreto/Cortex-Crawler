@@ -70,7 +70,7 @@ except mysql.connector.Error as err:
 # --- Configurações do projeto que dependem do banco ---
 
 NOME_ARQUIVO = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')};{fk_modelo};{fk_zona};{fk_empresa}.csv" #AQUI
-NOME_ARQUIVO_PROCESSO = f"Processos;{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')};{fk_modelo};{fk_zona};{fk_empresa};.csv" #AQUI
+NOME_ARQUIVO_PROCESSO = f"Processos;{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')};{fk_modelo};{fk_zona};{fk_empresa}.csv" #AQUI
 CAMINHO_ARQUIVO = os.path.join(CAMINHO_PASTA, NOME_ARQUIVO)
 CAMINHO_ARQUIVO_PROCESSO = os.path.join(CAMINHO_PASTA, NOME_ARQUIVO_PROCESSO)
 NOME_LOG = f"log_processamento;{fk_modelo};{fk_zona};{fk_empresa}.csv" #AQUI
