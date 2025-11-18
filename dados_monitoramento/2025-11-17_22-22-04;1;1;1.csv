@@ -1,0 +1,3 @@
+fk_modelo,fk_zona,fk_empresa,timestamp,cpu,ram,armazenamento,disco_uso,gpu
+1,1,1,2025-11-17_22-22-15,7.2,67.4,48.9,0.3,0
+1,1,1,2025-11-17_22-22-26,11.0,67.5,48.9,0.2,0

@@ -479,6 +479,9 @@ def main():
             df_proc = pd.DataFrame(processos_coletados)
             salvar_arquivo(df_proc, CAMINHO_ARQUIVO_PROCESSO)
 
+            dados_coletados = []
+            processos_coletados = []
+
             try:
                 whitelist_com_matar = check_whitelist_matar(conexao, fk_modelo)
                 aplicar_matar_processos(conexao, whitelist_com_matar,fk_modelo) 
