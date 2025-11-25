@@ -501,7 +501,7 @@ def main():
                 adicionar_a_chunks(NOME_ARQUIVO_PROCESSO)
 
                 try:
-                    sucesso_dados = send_to_s3(NOME_ARQUIVO, bucket_name=os.getenv("AWS_BUCKET_NAME"), s3_prefix="dados????/")
+                    sucesso_dados = send_to_s3(NOME_ARQUIVO, bucket_name=os.getenv("AWS_BUCKET_NAME"), s3_prefix="dados_servidores/")
                     sucesso_processos = send_to_s3(NOME_ARQUIVO_PROCESSO, bucket_name=os.getenv("AWS_BUCKET_NAME"), s3_prefix="processos/")
                     if sucesso_dados and sucesso_processos:
                         registrar_log("Upload S3 concluído com sucesso.")
