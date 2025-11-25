@@ -406,7 +406,7 @@ def matar_fora_whitelist(conexao, processos, nomes_whitelist):
 def send_to_s3(local_folder, bucket_name=None, s3_prefix='data/'):
     if not bucket_name:
         bucket_name = os.getenv("AWS_BUCKET_NAME")
-    s3_client = boto3.client("s3",
+        s3_client = boto3.client("s3",
         aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
         aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
         aws_session_token=os.getenv("AWS_SESSION_TOKEN")
@@ -501,11 +501,14 @@ def main():
                 adicionar_a_chunks(NOME_ARQUIVO_PROCESSO)
 
                 try:
-                    sucesso = send_to_s3(CAMINHO_PASTA, bucket_name=os.getenv("AWS_BUCKET_NAME"), s3_prefix="dados_monitoramento/")
-                    if sucesso:
+                    sucesso_dados = send_to_s3(NOME_ARQUIVO, bucket_name=os.getenv("AWS_BUCKET_NAME"), s3_prefix="dados????/")
+                    sucesso_processos = send_to_s3(NOME_ARQUIVO_PROCESSO, bucket_name=os.getenv("AWS_BUCKET_NAME"), s3_prefix="processos/")
+                    if sucesso_dados and sucesso_processos:
                         registrar_log("Upload S3 concluído com sucesso.")
-                    else:
-                        registrar_log("Falha no upload para S3.")
+                    elif not sucesso_dados:
+                        registrar_log("Falha no upload para S3 (Dados de máquina)")
+                    elif not sucesso_processos:
+                        registrar_log("Falha no upload para S3 (Processos)")
                 except Exception as e:
                     registrar_log(f"Erro no upload para S3: {e}")
 
