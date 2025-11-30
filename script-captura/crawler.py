@@ -22,7 +22,7 @@ nome_maquina = "DESKTOP-N2E1DHL"
 ip = "10.102.136.40"
 
 # --- Configurações do projeto ---
-DURACAO_CAPTURA = 1 * 60 
+DURACAO_CAPTURA = 5 * 60 
 CAMINHO_PASTA = 'dados_monitoramento'
 
 
@@ -513,6 +513,7 @@ def main():
                 dados_coletados = []
                 processos_coletados = []
 
+            time.sleep(56)
         except KeyboardInterrupt:
             print("\nMonitoramento interrompido pelo usuário.")
             registrar_log("Monitoramento interrompido manualmente.")
