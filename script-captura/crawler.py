@@ -403,41 +403,88 @@ def matar_fora_whitelist(conexao, processos, nomes_whitelist):
 
 
 # --- S3 upload ---
-def send_to_s3(local_folder, bucket_name=None, s3_prefix='data/'):
+def send_to_s3(arquivo_ou_pasta, bucket_name=None, s3_prefix='data/'):
+    # valida a função
     if not bucket_name:
         bucket_name = os.getenv("AWS_BUCKET_NAME")
-        s3_client = boto3.client("s3",
-        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-        aws_session_token=os.getenv("AWS_SESSION_TOKEN")
-    )
-
-    if not os.path.exists(local_folder):
-        registrar_log(f"Pasta {local_folder} não existe para upload.")
+    
+    if not bucket_name:
+        registrar_log("AWS_BUCKET_NAME não configurado no ambiente.")
+        return False
+    
+    aws_key = os.getenv("AWS_ACCESS_KEY_ID")
+    aws_secret = os.getenv("AWS_SECRET_ACCESS_KEY")
+    aws_token = os.getenv("AWS_SESSION_TOKEN")
+    
+    if not aws_key or not aws_secret:
+        registrar_log("Credenciais AWS não configuradas no ambiente.")
+        return False
+    
+    # config de ambiente
+    try:
+        s3_client = boto3.client(
+            "s3",
+            aws_access_key_id=aws_key,
+            aws_secret_access_key=aws_secret,
+            aws_session_token=aws_token
+        )
+    except Exception as e:
+        registrar_log(f"Erro ao criar cliente S3: {e}")
+        return False
+    
+    if not os.path.exists(arquivo_ou_pasta):
+        registrar_log(f"Arquivo/Pasta {arquivo_ou_pasta} não existe para upload.")
         return False
     
     try:
         uploaded_files = 0
         existing_files = []
+        # aqui verifica se o arquivo ja existe na s3, para não ter arquivos/pastas repetidas
         try:
             response = s3_client.list_objects_v2(Bucket=bucket_name, Prefix=s3_prefix)
             if "Contents" in response:
                 existing_files = [obj["Key"].split("/")[-1] for obj in response["Contents"]]
-        except Exception:
+        except Exception as e:
+            registrar_log(f"Aviso: Não foi possível listar objetos S3: {e}")
             existing_files = []
-
-        for filename in os.listdir(local_folder):
-            local_path = os.path.join(local_folder, filename)
-            if filename not in existing_files and os.path.isfile(local_path):
-                s3_key = f"{s3_prefix}{filename}" if s3_prefix else filename
-                s3_client.upload_file(local_path, bucket_name, s3_key)
-                print(f"Enviado {local_path} para s3://{bucket_name}/{s3_key}")
-                uploaded_files += 1
-
+        
+        # se for arquivo 
+        if os.path.isfile(arquivo_ou_pasta):
+            filename = os.path.basename(arquivo_ou_pasta)
+            if filename not in existing_files:
+                try:
+                    s3_key = f"{s3_prefix}{filename}" if s3_prefix else filename
+                    s3_client.upload_file(arquivo_ou_pasta, bucket_name, s3_key)
+                    print(f"Enviado {arquivo_ou_pasta} para s3://{bucket_name}/{s3_key}")
+                    registrar_log(f"Arquivo enviado para S3: {s3_key}")
+                    uploaded_files += 1
+                except Exception as e:
+                    registrar_log(f"Erro ao enviar {filename} para S3: {e}")
+                    return False
+            else:
+                registrar_log(f"Arquivo {filename} já existe no S3, pulando.")
+        
+        # se for pasta
+        elif os.path.isdir(arquivo_ou_pasta):
+            for filename in os.listdir(arquivo_ou_pasta):
+                local_path = os.path.join(arquivo_ou_pasta, filename)
+                if os.path.isfile(local_path) and filename not in existing_files:
+                    try:
+                        s3_key = f"{s3_prefix}{filename}" if s3_prefix else filename
+                        s3_client.upload_file(local_path, bucket_name, s3_key)
+                        print(f"Enviado {local_path} para s3://{bucket_name}/{s3_key}")
+                        registrar_log(f"Arquivo enviado para S3: {s3_key}")
+                        uploaded_files += 1
+                    except Exception as e:
+                        registrar_log(f"Erro ao enviar {filename} para S3: {e}")
+        
         print(f"Upload concluído, {uploaded_files} arquivo(s) enviado(s)")
+        registrar_log(f"Upload S3 concluído: {uploaded_files} arquivo(s) enviado(s)")
         return True
+    
     except Exception as e:
-        print(f"Erro ao enviar pasta para S3: {e}")
+        print(f"Erro ao enviar para S3: {e}")
+        registrar_log(f"Erro geral no upload S3: {e}")
         return False
 
 # --- Main ---
@@ -501,8 +548,11 @@ def main():
                 adicionar_a_chunks(NOME_ARQUIVO_PROCESSO)
 
                 try:
-                    sucesso_dados = send_to_s3(NOME_ARQUIVO, bucket_name=os.getenv("AWS_BUCKET_NAME"), s3_prefix="dados_servidores/")
-                    sucesso_processos = send_to_s3(NOME_ARQUIVO_PROCESSO, bucket_name=os.getenv("AWS_BUCKET_NAME"), s3_prefix="processos/")
+                    # espera um pouco para garantir que os arquivos foram fechados (se não eles não são enviados corretamente, pois tenta enviar antes do arquivo realmente ser fechado)
+                    time.sleep(1)
+                    
+                    sucesso_dados = send_to_s3(CAMINHO_ARQUIVO, bucket_name=os.getenv("AWS_BUCKET_NAME"), s3_prefix="dados_servidores/")
+                    sucesso_processos = send_to_s3(CAMINHO_ARQUIVO_PROCESSO, bucket_name=os.getenv("AWS_BUCKET_NAME"), s3_prefix="processos/")
                     if sucesso_dados and sucesso_processos:
                         registrar_log("Upload S3 concluído com sucesso.")
                     elif not sucesso_dados:
