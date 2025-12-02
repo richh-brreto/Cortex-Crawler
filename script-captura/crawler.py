@@ -69,13 +69,13 @@ except mysql.connector.Error as err:
 
 # --- Configurações do projeto que dependem do banco ---
 
-NOME_ARQUIVO = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')},{fk_modelo},{fk_zona},{fk_empresa}.csv" #AQUI
-NOME_ARQUIVO_PROCESSO = f"Processos,{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')},{fk_modelo},{fk_zona},{fk_empresa}.csv" #AQUI
+NOME_ARQUIVO = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')};{fk_modelo};{fk_zona};{fk_empresa}.csv" #AQUI
+NOME_ARQUIVO_PROCESSO = f"Processos;{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')};{fk_modelo};{fk_zona};{fk_empresa}.csv" #AQUI
 CAMINHO_ARQUIVO = os.path.join(CAMINHO_PASTA, NOME_ARQUIVO)
 CAMINHO_ARQUIVO_PROCESSO = os.path.join(CAMINHO_PASTA, NOME_ARQUIVO_PROCESSO)
-NOME_LOG = f"log_processamento,{fk_modelo},{fk_zona},{fk_empresa}.csv" #AQUI
+NOME_LOG = f"log_processamento;{fk_modelo};{fk_zona};{fk_empresa}.csv" #AQUI
 CAMINHO_LOG = os.path.join(CAMINHO_PASTA, NOME_LOG)
-NOME_CHUNK = f"chunks_processados,{fk_modelo},{fk_zona},{fk_empresa}.csv"  #AQUI
+NOME_CHUNK = f"chunks_processados;{fk_modelo};{fk_zona};{fk_empresa}.csv"  #AQUI
 CAMINHO_CHUNKS = os.path.join(CAMINHO_PASTA, NOME_CHUNK)
 
 # --- Funções de coleta ---
@@ -236,9 +236,9 @@ def adicionar_a_chunks(nome_arquivo):
 
 def redefinir_caminho():
     global NOME_ARQUIVO, CAMINHO_ARQUIVO, NOME_ARQUIVO_PROCESSO, CAMINHO_ARQUIVO_PROCESSO
-    NOME_ARQUIVO = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')},{fk_modelo},{fk_zona},{fk_empresa}.csv" #AQUI
+    NOME_ARQUIVO = f"{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')};{fk_modelo};{fk_zona};{fk_empresa}.csv" #AQUI
     CAMINHO_ARQUIVO = os.path.join(CAMINHO_PASTA, NOME_ARQUIVO)
-    NOME_ARQUIVO_PROCESSO = f"Processos,{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')},{fk_modelo},{fk_zona},{fk_empresa}.csv" #AQUI
+    NOME_ARQUIVO_PROCESSO = f"Processos,{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')};{fk_modelo};{fk_zona};{fk_empresa}.csv" #AQUI
     CAMINHO_ARQUIVO_PROCESSO = os.path.join(CAMINHO_PASTA, NOME_ARQUIVO_PROCESSO)
     return CAMINHO_ARQUIVO,NOME_ARQUIVO, NOME_ARQUIVO_PROCESSO, CAMINHO_ARQUIVO_PROCESSO
 
